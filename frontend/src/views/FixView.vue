@@ -23,26 +23,39 @@
           </div>
           <div>
             <h1 class="fix-title">员工整改</h1>
-            <p v-if="!token" class="fix-warn">请通过扫码或链接（含 token）进入</p>
-            <p v-else class="fix-sub">查看待整改项并上传整改图（图片对按 #key 从小到大排序）</p>
+            <p v-if="authState === 'valid' && employeeName" class="fix-sub">
+              {{ employeeName }}，查看待整改项并上传整改图（图片对按 #key 从小到大排序）
+            </p>
+            <p v-else-if="authState === 'checking'" class="fix-sub">正在校验二维码链接…</p>
           </div>
         </div>
       </header>
 
-      <section v-loading="loading" class="fix-content">
-        <div v-if="token" class="fix-toolbar">
+      <!-- 二维码无效 / 过期 / 缺参数 / 账号禁用：阻断，提示找管理员重新生成 -->
+      <section v-if="authState === 'checking'" v-loading="true" element-loading-text="正在校验二维码链接…" class="fix-content">
+        <div class="fix-empty" style="visibility: hidden"></div>
+      </section>
+      <section v-else-if="authState !== 'valid'" class="fix-content">
+        <div class="fix-empty fix-block">
+          <div class="fix-empty-icon" :class="authState === 'disabled' ? 'warn' : ''">
+            <el-icon><WarningFilled v-if="authState === 'disabled'" /><CircleClose v-else /></el-icon>
+          </div>
+          <p class="fix-empty-text">{{ blockTitle }}</p>
+          <p class="fix-empty-hint">{{ blockHint }}</p>
+          <p class="fix-empty-contact">
+            <el-icon><ChatDotSquare /></el-icon>
+            请联系管理员重新生成您的专属整改二维码
+          </p>
+        </div>
+      </section>
+
+      <section v-else v-loading="loading" class="fix-content">
+        <div class="fix-toolbar">
+          <span v-if="expireText" class="fix-expire">二维码有效期至 {{ expireText }}</span>
           <el-switch v-model="onlyPending" active-text="仅看待整改" inactive-text="显示全部" />
         </div>
 
-        <div v-if="!token" class="fix-empty">
-          <div class="fix-empty-icon">
-            <el-icon><Link /></el-icon>
-          </div>
-          <p class="fix-empty-text">缺少 token</p>
-          <p class="fix-empty-hint">无法加载整改列表，请使用管理员提供的链接或扫码进入</p>
-        </div>
-
-        <div v-else-if="records.length === 0 && !loading" class="fix-empty">
+        <div v-if="records.length === 0 && !loading" class="fix-empty">
           <div class="fix-empty-icon success">
             <el-icon><CircleCheck /></el-icon>
           </div>
@@ -111,16 +124,57 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, Loading, Link } from '@element-plus/icons-vue'
+import { CircleCheck, Loading, CircleClose, WarningFilled, ChatDotSquare } from '@element-plus/icons-vue'
 import { api, apiBase } from '@/api/request'
 
 const route = useRoute()
-const loading = ref(true)
+const loading = ref(false)
 const uploadingId = ref(null)
 const records = ref([])
 const onlyPending = ref(false)
 
-const token = computed(() => route.query.token || '')
+// 二维码链接参数：uid（员工ID）+ token（随机凭证），二者由后端绑定校验
+const uid = computed(() => String(route.query.uid || '').trim())
+const token = computed(() => String(route.query.token || '').trim())
+
+// checking | missing | invalid | expired | disabled | valid
+const authState = ref('checking')
+const employeeName = ref('')
+const qrExpires = ref('')
+
+const blockTitle = computed(() => {
+  switch (authState.value) {
+    case 'missing':
+      return '链接信息不完整'
+    case 'expired':
+      return '二维码已过期'
+    case 'disabled':
+      return '账号已被停用'
+    default:
+      return '二维码链接无效'
+  }
+})
+
+const blockHint = computed(() => {
+  switch (authState.value) {
+    case 'missing':
+      return '链接中缺少员工 ID 或 token，无法加载您的整改内容'
+    case 'expired':
+      return '该整改二维码的有效期已结束'
+    case 'disabled':
+      return '您的员工账号当前处于停用状态'
+    default:
+      return '链接中的员工 ID 与 token 不匹配，无法访问任何整改内容'
+  }
+})
+
+const expireText = computed(() => {
+  if (!qrExpires.value) return ''
+  const d = new Date(qrExpires.value.replace(' ', 'T'))
+  if (Number.isNaN(d.getTime())) return qrExpires.value
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+})
 
 function imageUrl(path) {
   if (!path) return ''
@@ -128,45 +182,93 @@ function imageUrl(path) {
   return path.startsWith('http') ? path : (base.replace(/\/$/, '') + path)
 }
 
+// 后端业务错误码 -> 页面阻断状态
+function stateFromBizCode(code) {
+  if (code === 4001) return 'missing'
+  if (code === 4002) return 'invalid'
+  if (code === 4003) return 'disabled'
+  if (code === 4004) return 'expired'
+  return 'invalid'
+}
+
+async function verifySession() {
+  if (!uid.value || !token.value) {
+    authState.value = 'missing'
+    return false
+  }
+  authState.value = 'checking'
+  try {
+    const data = await api.getEmployeeSession(uid.value, token.value)
+    employeeName.value = data?.name || ''
+    qrExpires.value = data?.qr_token_expires || ''
+    authState.value = 'valid'
+    return true
+  } catch (e) {
+    authState.value = stateFromBizCode(e?.bizCode)
+    employeeName.value = ''
+    records.value = []
+    return false
+  }
+}
+
 async function loadRecords() {
-  if (!token.value) {
+  if (authState.value !== 'valid') {
     loading.value = false
     return
   }
   loading.value = true
   try {
-    const list = await api.getRecords({ token: token.value, status: onlyPending.value ? 'pending' : undefined })
+    // 始终携带 uid + token；后端只按 token 绑定的本人 ID 取数，忽略其他 user_id
+    const list = await api.getRecords({
+      uid: uid.value,
+      token: token.value,
+      status: onlyPending.value ? 'pending' : undefined,
+    })
     records.value = list || []
-  } catch (_) {
+  } catch (e) {
     records.value = []
+    // 会话中途过期/被禁用/被重置：切换为阻断提示
+    if ([4001, 4002, 4003, 4004].includes(e?.bizCode)) {
+      authState.value = stateFromBizCode(e.bizCode)
+    }
   } finally {
     loading.value = false
   }
 }
 
 async function uploadFix(recordId, file) {
+  if (authState.value !== 'valid') return false
   uploadingId.value = recordId
   try {
-    const res = await api.uploadImage(file, token.value)
+    const res = await api.uploadImage(file, uid.value, token.value)
     if (!res?.path) throw new Error('上传失败')
-    await api.uploadFix(recordId, res.path, token.value)
+    await api.uploadFix(recordId, res.path, uid.value, token.value)
     const idx = records.value.findIndex((r) => r.id === recordId)
     if (idx !== -1) {
       records.value[idx] = { ...records.value[idx], fix_image: res.path, status: 'completed' }
     }
     ElMessage.success('整改已提交')
-  } catch (_) {
-    ElMessage.error('上传失败')
+  } catch (e) {
+    if ([4001, 4002, 4003, 4004].includes(e?.bizCode)) {
+      authState.value = stateFromBizCode(e.bizCode)
+    } else {
+      ElMessage.error('上传失败')
+    }
   } finally {
     uploadingId.value = null
   }
   return false
 }
 
-onMounted(loadRecords)
+onMounted(async () => {
+  const ok = await verifySession()
+  if (ok) await loadRecords()
+})
 
 // 切换筛选后刷新
-watch(onlyPending, loadRecords)
+watch(onlyPending, () => {
+  if (authState.value === 'valid') loadRecords()
+})
 </script>
 
 <style scoped>
@@ -298,6 +400,30 @@ watch(onlyPending, loadRecords)
 .fix-empty-icon.success {
   background: rgba(16, 185, 129, 0.2);
   color: #34d399;
+}
+
+.fix-empty-icon.warn {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+}
+
+.fix-block {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.fix-empty-contact {
+  margin-top: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #fca5a5;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.fix-expire {
+  font-size: 13px;
+  color: #94a3b8;
 }
 
 .fix-empty-text {

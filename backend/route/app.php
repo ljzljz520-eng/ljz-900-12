@@ -6,12 +6,16 @@ use app\controller\InspectionItemController;
 use app\controller\RecordController;
 use app\controller\UploadController;
 use app\controller\QrController;
+use app\controller\EmployeeController;
 use app\controller\SummaryController;
 use app\middleware\AuthMiddleware;
 
 Route::post('/api/auth/login', [AuthController::class, 'login']);
 Route::get('/api/auth/me', [AuthController::class, 'me']);
 Route::post('/api/auth/logout', [AuthController::class, 'logout']);
+
+// 员工扫码入口：uid + token 校验（无效/过期返回对应错误码，页面提示找管理员重新生成）
+Route::get('/api/employee/session', [EmployeeController::class, 'session']);
 
 // 以下管理端接口需登录后访问
 Route::get('/api/users', [UserController::class, 'index'])->middleware(AuthMiddleware::class);

@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `username` varchar(64) DEFAULT NULL,
   `password_hash` varchar(255) DEFAULT NULL,
   `token` varchar(64) NOT NULL,
+  `qr_token_expires` datetime DEFAULT NULL,
   `qr_code_url` varchar(255) DEFAULT NULL,
   `role` varchar(16) NOT NULL DEFAULT 'employee',
   `is_active` tinyint(1) NOT NULL DEFAULT 1,

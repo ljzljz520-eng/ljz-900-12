@@ -4,6 +4,7 @@ namespace app\controller;
 use app\model\InspectionItem;
 use app\model\Record;
 use app\model\User;
+use app\service\EmployeeTokenService;
 use app\service\QrService;
 use app\service\RecordSequenceService;
 use think\facade\Log;
@@ -14,6 +15,22 @@ class RecordController
     protected function seq(): RecordSequenceService
     {
         return new RecordSequenceService();
+    }
+
+    /**
+     * 管理端 Bearer 登录态（auth_token，未过期的 admin）
+     * 用于员工端开放接口中区分管理员访问
+     */
+    private function adminFromBearer(): ?User
+    {
+        $header = (string) Request::header('authorization', '');
+        if (!preg_match('/^Bearer\s+(.+)$/i', $header, $m)) {
+            return null;
+        }
+        return User::where('auth_token', trim($m[1]))
+            ->where('role', 'admin')
+            ->where('auth_token_expires', '>', date('Y-m-d H:i:s'))
+            ->find() ?: null;
     }
 
     private function normalizeCheckDate($checkDate): ?string
@@ -35,23 +52,36 @@ class RecordController
     public function index(): Response
     {
         try {
-            $userId = Request::param('user_id');
-            $token = Request::param('token');
+            // 鉴权（二选一，禁止匿名访问）：
+            // 1) 管理员 Bearer 登录态：可按 user_id 查看任意员工；
+            // 2) 员工扫码：必须提供与 token 匹配的 uid，后端只认 token 解析出的本人 ID，
+            //    前端传任何 user_id 都不能看到他人内容。
+            $admin = $this->adminFromBearer();
+            $token = (string) Request::param('token', '');
+            $uid = Request::param('uid');
+
+            if ($admin) {
+                $userId = (int) Request::param('user_id');
+                if ($userId <= 0) {
+                    return api_json(['code' => 400, 'message' => '缺少 user_id', 'data' => null]);
+                }
+            } else {
+                // uid 缺省时兼容旧链接：尝试从 token 反查（仍要求 token 本身有效）
+                if (!$uid) {
+                    $guessed = User::where('token', $token)
+                        ->where('role', 'employee')
+                        ->find();
+                    $uid = $guessed?->id;
+                }
+                [$errCode, $employee, $errMsg] = (new EmployeeTokenService())->validate($uid, $token);
+                if ($errCode !== EmployeeTokenService::OK) {
+                    return api_json(['code' => $errCode, 'message' => $errMsg, 'data' => null]);
+                }
+                $userId = (int) $employee->id;
+            }
+
             $checkDate = $this->normalizeCheckDate(Request::param('check_date'));
             $status = Request::param('status');
-            if ($token) {
-                $user = User::where('token', $token)->find();
-                if (!$user) {
-                    return api_json(['code' => 404, 'message' => '无效的 token', 'data' => null]);
-                }
-                if (isset($user->is_active) && (int) $user->is_active !== 1) {
-                    return api_json(['code' => 403, 'message' => '账号已禁用', 'data' => null]);
-                }
-                $userId = $user->id;
-            }
-            if (!$userId) {
-                return api_json(['code' => 400, 'message' => '缺少 user_id 或 token', 'data' => null]);
-            }
             if ($checkDate === '__INVALID__') {
                 return api_json(['code' => 400, 'message' => 'check_date 格式错误（应为 YYYY-MM-DD）', 'data' => null]);
             }
@@ -141,6 +171,7 @@ class RecordController
                         'records' => $created,
                         'link' => $qr['link'],
                         'qr_code_url' => $qr['qr_code_url'],
+                        'qr_token_expires' => $qr['qr_token_expires'],
                     ],
                 ]);
             }
@@ -176,15 +207,16 @@ class RecordController
             if (!$record) {
                 return api_json(['code' => 404, 'message' => '记录不存在', 'data' => null]);
             }
-            $token = (string) Request::param('token');
-            if (!$token) {
-                return api_json(['code' => 401, 'message' => '缺少 token', 'data' => null]);
+            // 员工只能提交自己记录的整改图：uid + token 必须同时匹配且未过期
+            [$errCode, $employee, $errMsg] = (new EmployeeTokenService())->validate(
+                Request::param('uid'),
+                (string) Request::param('token', '')
+            );
+            if ($errCode !== EmployeeTokenService::OK) {
+                return api_json(['code' => $errCode, 'message' => $errMsg, 'data' => null]);
             }
-            $user = User::where('token', $token)->find();
-            if (!$user) {
-                return api_json(['code' => 401, 'message' => '无效的 token', 'data' => null]);
-            }
-            if ((int) $record->user_id !== (int) $user->id) {
+            if ((int) $record->user_id !== (int) $employee->id) {
+                // token 与记录归属不一致（例如改了记录 id 操作他人记录）
                 return api_json(['code' => 403, 'message' => '无权操作该记录', 'data' => null]);
             }
             $fixImage = Request::param('fix_image');

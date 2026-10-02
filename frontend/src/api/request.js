@@ -38,10 +38,13 @@ request.interceptors.response.use(
           window.__auth_redirect = true
           window.location.href = '/login'
         }
-        return Promise.reject(new Error(d.message || '未登录'))
+        return Promise.reject(Object.assign(new Error(d.message || '未登录'), { bizCode: d.code }))
       }
-      ElMessage.error(d.message || '请求失败')
-      return Promise.reject(new Error(d.message || '请求失败'))
+      // 员工二维码相关错误（4001~4004）由页面自行展示阻断提示，不弹全局 toast
+      if (![4001, 4002, 4003, 4004].includes(d.code)) {
+        ElMessage.error(d.message || '请求失败')
+      }
+      return Promise.reject(Object.assign(new Error(d.message || '请求失败'), { bizCode: d.code }))
     }
     return res
   },
@@ -78,11 +81,16 @@ export const api = {
   // 2) 新：data = { records: records[], link, qr_code_url }
   createRecords: (data) => request.post('/api/records', data).then((r) => r.data?.data ?? []),
   deleteRecord: (id) => request.delete(`/api/records/${id}`).then((r) => r.data),
-  uploadFix: (id, fixImage, token) =>
-    request.put(`/api/records/${id}/fix`, { fix_image: fixImage, token }).then((r) => r.data?.data),
-  uploadImage: (file, token) => {
+  uploadFix: (id, fixImage, uid, token) =>
+    request.put(`/api/records/${id}/fix`, { fix_image: fixImage, uid, token }).then((r) => r.data?.data),
+  // 员工扫码会话校验：无效/过期会以业务错误码 reject（不跳登录）
+  getEmployeeSession: (uid, token) =>
+    request.get('/api/employee/session', { params: { uid, token } }).then((r) => r.data?.data),
+  uploadImage: (file, uid, token) => {
     const form = new FormData()
     form.append('file', file)
+    // 员工上传必须同时带 uid + token，后端双重校验，防止越权
+    if (uid) form.append('uid', uid)
     if (token) form.append('token', token)
     return request.post('/api/upload/image', form).then((r) => r.data?.data)
   },

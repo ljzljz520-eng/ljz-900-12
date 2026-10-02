@@ -54,7 +54,7 @@
         </div>
         <div v-if="u.fixLink" class="employee-result">
           <div class="result-row">
-            <label>整改链接：</label>
+            <label>整改链接（含员工 ID 与 token）：</label>
             <el-input v-model="u.fixLink" readonly size="default" class="result-input">
               <template #append>
                 <el-button type="primary" @click="copyText(u.fixLink)">复制</el-button>
@@ -62,8 +62,24 @@
             </el-input>
           </div>
           <div v-if="u.qr_code_url" class="result-qr-row">
-            <label>二维码：</label>
-            <img :src="imageUrl(u.qr_code_url)" alt="二维码" class="qr-thumb" />
+            <label>
+              专属二维码：
+              <el-tag v-if="u.qr_token_expires" type="success" size="small" class="expire-tag">
+                有效期至 {{ formatExpire(u.qr_token_expires) }}
+              </el-tag>
+            </label>
+            <div class="qr-box">
+              <img :src="imageUrl(u.qr_code_url)" alt="二维码" class="qr-thumb" />
+            </div>
+          </div>
+          <div v-else class="result-qr-row">
+            <el-alert
+              type="warning"
+              :closable="false"
+              show-icon
+              title="尚未生成二维码"
+              description="点击上方「生成/刷新二维码」后，员工扫码即可进入本人整改页"
+            />
           </div>
         </div>
       </div>
@@ -96,9 +112,18 @@ const dialogMode = ref('create') // create | edit
 const saving = ref(false)
 const form = ref({ id: null, name: '' })
 
-function getFixLink(token) {
+function getFixLink(u) {
   const base = typeof window !== 'undefined' ? window.location.origin + '/fix' : 'http://localhost:3000/fix'
-  return `${base}?token=${encodeURIComponent(token)}`
+  // 链接同时携带员工 ID 与 token，后端绑定校验，改参数无法看到他人内容
+  return `${base}?uid=${encodeURIComponent(u.id)}&token=${encodeURIComponent(u.token || '')}`
+}
+
+function formatExpire(v) {
+  if (!v) return ''
+  const d = new Date(typeof v === 'string' ? v.replace(' ', 'T') : v)
+  if (Number.isNaN(d.getTime())) return String(v)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 async function loadUsers() {
@@ -108,7 +133,7 @@ async function loadUsers() {
     const all = list || []
     users.value = all.filter((u) => u.role === 'employee').map((u) => ({
       ...u,
-      fixLink: getFixLink(u.token),
+      fixLink: getFixLink(u),
     }))
   } catch (_) {
     users.value = []
@@ -157,8 +182,9 @@ async function generateQr(u) {
   try {
     const baseUrl = typeof window !== 'undefined' ? window.location.origin + '/fix' : 'http://localhost:3000/fix'
     const data = await api.generateQr(u.id, baseUrl)
-    u.fixLink = data?.link || getFixLink(u.token)
+    u.fixLink = data?.link || getFixLink(u)
     if (data?.qr_code_url) u.qr_code_url = data.qr_code_url
+    if (data?.qr_token_expires) u.qr_token_expires = data.qr_token_expires
     ElMessage.success('二维码已生成')
   } catch (_) {
     ElMessage.error('生成失败')
@@ -190,8 +216,9 @@ async function resetToken(u) {
     const updated = await api.resetUserToken(u.id)
     u.token = updated?.token || u.token
     u.qr_code_url = updated?.qr_code_url || null
-    u.fixLink = getFixLink(u.token)
-    ElMessage.success('token 已重置')
+    u.qr_token_expires = updated?.qr_token_expires || null
+    u.fixLink = getFixLink(u)
+    ElMessage.success('token 已重置，请重新生成二维码')
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('重置失败')
   }
@@ -381,5 +408,14 @@ export default {
   border: 1px solid #e2e8f0;
   object-fit: contain;
   background: white;
+}
+
+.expire-tag {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.qr-box {
+  margin-top: 4px;
 }
 </style>

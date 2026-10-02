@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace app\controller;
 use app\model\User;
+use app\service\EmployeeTokenService;
 use think\facade\Log;
 use think\facade\Request;
 use think\Response;
@@ -34,14 +35,17 @@ class UploadController
                 }
             }
             if (!$authedUser && $employeeToken) {
-                $authedUser = User::where('token', $employeeToken)
-                    ->where('role', 'employee')
-                    ->find();
-                if ($authedUser) {
-                    if (isset($authedUser->is_active) && (int) $authedUser->is_active !== 1) {
-                        return api_json(['code' => 403, 'message' => '账号已禁用', 'data' => null], 200);
-                    }
+                // 员工扫码上传：uid + token 必须同时匹配、账号启用且二维码未过期
+                [$errCode, $emp, $empErr] = (new EmployeeTokenService())->validate(
+                    Request::param('uid'),
+                    $employeeToken
+                );
+                if ($errCode === EmployeeTokenService::OK) {
+                    $authedUser = $emp;
                     $scope = 'employee';
+                } else {
+                    // 透传统一的错误码与"请联系管理员重新生成"提示
+                    return api_json(['code' => $errCode, 'message' => $empErr, 'data' => null], 200);
                 }
             }
             if (!$authedUser) {

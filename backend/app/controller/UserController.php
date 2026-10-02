@@ -105,6 +105,8 @@ class UserController
                 return api_json(['code' => 400, 'message' => '仅支持重置员工 token', 'data' => null]);
             }
             $user->token = $this->uniqueEmployeeToken();
+            // 旧二维码立即失效：清空过期时间与二维码地址，需管理员重新生成
+            $user->qr_token_expires = null;
             $user->qr_code_url = null;
             $user->save();
             return api_json(['code' => 0, 'message' => 'ok', 'data' => $user->toArray()]);
