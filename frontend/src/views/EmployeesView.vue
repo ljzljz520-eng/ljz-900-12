@@ -31,6 +31,9 @@
               <span class="token-badge" :title="u.token">token: {{ u.token }}</span>
               <el-tag v-if="u.is_active" type="success" size="small">启用</el-tag>
               <el-tag v-else type="info" size="small">已禁用</el-tag>
+              <el-tag :type="tokenExpired(u) ? 'danger' : 'warning'" size="small" class="expiry-tag">
+                {{ tokenExpired(u) ? '已过期' : '有效期至' }} {{ formatExpiry(u.token_expires_at) }}
+              </el-tag>
             </div>
           </div>
         </div>
@@ -96,9 +99,22 @@ const dialogMode = ref('create') // create | edit
 const saving = ref(false)
 const form = ref({ id: null, name: '' })
 
-function getFixLink(token) {
+function getFixLink(uid, token) {
   const base = typeof window !== 'undefined' ? window.location.origin + '/fix' : 'http://localhost:3000/fix'
-  return `${base}?token=${encodeURIComponent(token)}`
+  return `${base}?uid=${encodeURIComponent(uid)}&token=${encodeURIComponent(token)}`
+}
+
+function formatExpiry(v) {
+  if (!v) return '—'
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return String(v)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+function tokenExpired(u) {
+  if (!u.token_expires_at) return false
+  return new Date(u.token_expires_at).getTime() < Date.now()
 }
 
 async function loadUsers() {
@@ -108,7 +124,7 @@ async function loadUsers() {
     const all = list || []
     users.value = all.filter((u) => u.role === 'employee').map((u) => ({
       ...u,
-      fixLink: getFixLink(u.token),
+      fixLink: getFixLink(u.id, u.token),
     }))
   } catch (_) {
     users.value = []
@@ -157,9 +173,12 @@ async function generateQr(u) {
   try {
     const baseUrl = typeof window !== 'undefined' ? window.location.origin + '/fix' : 'http://localhost:3000/fix'
     const data = await api.generateQr(u.id, baseUrl)
-    u.fixLink = data?.link || getFixLink(u.token)
+    // 后端生成二维码时会刷新 token 与有效期，同步更新本卡片
+    if (data?.token) u.token = data.token
+    if (data?.token_expires_at) u.token_expires_at = data.token_expires_at
+    u.fixLink = data?.link || getFixLink(u.id, u.token)
     if (data?.qr_code_url) u.qr_code_url = data.qr_code_url
-    ElMessage.success('二维码已生成')
+    ElMessage.success('二维码已生成，旧二维码已失效')
   } catch (_) {
     ElMessage.error('生成失败')
   }
@@ -189,9 +208,10 @@ async function resetToken(u) {
     })
     const updated = await api.resetUserToken(u.id)
     u.token = updated?.token || u.token
+    u.token_expires_at = updated?.token_expires_at || u.token_expires_at
     u.qr_code_url = updated?.qr_code_url || null
-    u.fixLink = getFixLink(u.token)
-    ElMessage.success('token 已重置')
+    u.fixLink = getFixLink(u.id, u.token)
+    ElMessage.success('token 已重置，请重新生成二维码')
   } catch (e) {
     if (e !== 'cancel') ElMessage.error('重置失败')
   }
@@ -352,6 +372,10 @@ export default {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.expiry-tag {
+  border: none;
 }
 
 .employee-actions {

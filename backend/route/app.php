@@ -7,6 +7,7 @@ use app\controller\RecordController;
 use app\controller\UploadController;
 use app\controller\QrController;
 use app\controller\SummaryController;
+use app\controller\EmployeeController;
 use app\middleware\AuthMiddleware;
 
 Route::post('/api/auth/login', [AuthController::class, 'login']);
@@ -21,7 +22,9 @@ Route::put('/api/users/:id', [UserController::class, 'update'])->middleware(Auth
 Route::post('/api/users/:id/reset-token', [UserController::class, 'resetToken'])->middleware(AuthMiddleware::class);
 Route::post('/api/users/:id/toggle-active', [UserController::class, 'toggleActive'])->middleware(AuthMiddleware::class);
 Route::get('/api/inspection-items', [InspectionItemController::class, 'index'])->middleware(AuthMiddleware::class);
-// 记录查询需支持员工端通过 token 访问，因此不强制登录
+// 员工扫码端：uid + token 双键校验，无需管理员登录
+Route::get('/api/employee/session', [EmployeeController::class, 'session']);
+// 记录查询需支持员工端通过 uid + token 访问，因此不强制登录（控制器内做鉴权）
 Route::get('/api/records', [RecordController::class, 'index']);
 Route::post('/api/records', [RecordController::class, 'save'])->middleware(AuthMiddleware::class);
 Route::delete('/api/records/:id', [RecordController::class, 'delete'])->middleware(AuthMiddleware::class);

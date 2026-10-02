@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace app\controller;
 use app\model\User;
+use app\service\EmployeeTokenService;
 use think\facade\Log;
 use think\facade\Request;
 use think\Response;
@@ -33,15 +34,15 @@ class UploadController
                     $scope = 'admin';
                 }
             }
-            if (!$authedUser && $employeeToken) {
-                $authedUser = User::where('token', $employeeToken)
-                    ->where('role', 'employee')
-                    ->find();
-                if ($authedUser) {
-                    if (isset($authedUser->is_active) && (int) $authedUser->is_active !== 1) {
-                        return api_json(['code' => 403, 'message' => '账号已禁用', 'data' => null], 200);
-                    }
+            if (!$authedUser && ($employeeToken || Request::param('uid'))) {
+                // 员工上传：uid + token 双键校验（含过期、禁用、匹配检查）
+                $svc = new EmployeeTokenService();
+                [$code, $empUser] = $svc->verify(Request::param('uid'), (string) $employeeToken);
+                if ($code === EmployeeTokenService::OK) {
+                    $authedUser = $empUser;
                     $scope = 'employee';
+                } else {
+                    return api_json(['code' => $code, 'message' => $svc->message($code), 'data' => null]);
                 }
             }
             if (!$authedUser) {

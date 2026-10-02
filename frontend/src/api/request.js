@@ -30,8 +30,9 @@ function shouldRedirectToLogin(config, code) {
 request.interceptors.response.use(
   (res) => {
     const d = res.data
+    const opts = res.config.__employeeCall ? { skipAuthRedirect: true, silent: true } : (res.config.__opts || {})
     if (d && typeof d.code === 'number' && d.code !== 0) {
-      if (d.code === 401 && shouldRedirectToLogin(res.config, 401)) {
+      if (d.code === 401 && !opts.skipAuthRedirect && shouldRedirectToLogin(res.config, 401)) {
         localStorage.removeItem('auth_token')
         localStorage.removeItem('auth_user')
         if (!window.__auth_redirect) {
@@ -40,14 +41,18 @@ request.interceptors.response.use(
         }
         return Promise.reject(new Error(d.message || '未登录'))
       }
-      ElMessage.error(d.message || '请求失败')
-      return Promise.reject(new Error(d.message || '请求失败'))
+      if (!opts.silent) ElMessage.error(d.message || '请求失败')
+      const err = new Error(d.message || '请求失败')
+      err.code = d.code
+      err.payload = d
+      return Promise.reject(err)
     }
     return res
   },
   (err) => {
+    const opts = err.config?.__employeeCall ? { skipAuthRedirect: true, silent: true } : (err.config?.__opts || {})
     const code = err.response?.data?.code
-    if (shouldRedirectToLogin(err.config, code)) {
+    if (code === 401 && !opts.skipAuthRedirect && shouldRedirectToLogin(err.config, code)) {
       localStorage.removeItem('auth_token')
       localStorage.removeItem('auth_user')
       if (!window.__auth_redirect) {
@@ -55,8 +60,12 @@ request.interceptors.response.use(
         window.location.href = '/login'
       }
     }
-    const msg = err.response?.data?.message || err.message || '网络错误'
-    ElMessage.error(msg)
+    if (!opts.silent) {
+      const msg = err.response?.data?.message || err.message || '网络错误'
+      ElMessage.error(msg)
+    }
+    err.code = code
+    err.payload = err.response?.data
     return Promise.reject(err)
   }
 )
@@ -72,19 +81,29 @@ export const api = {
   resetUserToken: (id) => request.post(`/api/users/${id}/reset-token`).then((r) => r.data?.data),
   toggleUserActive: (id) => request.post(`/api/users/${id}/toggle-active`).then((r) => r.data?.data),
   getInspectionItems: () => request.get('/api/inspection-items').then((r) => r.data?.data ?? []),
-  getRecords: (params) => request.get('/api/records', { params }).then((r) => r.data?.data ?? []),
+  getRecords: (params, opts = {}) =>
+    request.get('/api/records', { params, __opts: opts }).then((r) => r.data?.data ?? []),
   // 兼容两种返回：
   // 1) 旧：data = records[]
   // 2) 新：data = { records: records[], link, qr_code_url }
   createRecords: (data) => request.post('/api/records', data).then((r) => r.data?.data ?? []),
   deleteRecord: (id) => request.delete(`/api/records/${id}`).then((r) => r.data),
-  uploadFix: (id, fixImage, token) =>
-    request.put(`/api/records/${id}/fix`, { fix_image: fixImage, token }).then((r) => r.data?.data),
-  uploadImage: (file, token) => {
+  // 员工扫码端接口：uid + token 双键；错误由页面自行展示（不弹全局 toast、不跳登录页）
+  employeeSession: (uid, token) =>
+    request.get('/api/employee/session', { params: { uid, token }, __employeeCall: true }).then((r) => r.data?.data),
+  uploadFix: (id, fixImage, uid, token) =>
+    request
+      .put(`/api/records/${id}/fix`, { fix_image: fixImage, uid, token }, { __employeeCall: true })
+      .then((r) => r.data?.data),
+  uploadImage: (file, uid, token) => {
     const form = new FormData()
     form.append('file', file)
+    // 员工上传携带 uid + token；管理员上传则两者都不传（走 Bearer 会话）
+    if (uid) form.append('uid', uid)
     if (token) form.append('token', token)
-    return request.post('/api/upload/image', form).then((r) => r.data?.data)
+    return request
+      .post('/api/upload/image', form, { __employeeCall: Boolean(uid || token) })
+      .then((r) => r.data?.data)
   },
   generateQr: (userId, baseUrl) => request.post('/api/qr/generate', { user_id: userId, base_url: baseUrl }).then((r) => r.data?.data),
   getSummary: () => request.get('/api/summary').then((r) => r.data?.data ?? []),

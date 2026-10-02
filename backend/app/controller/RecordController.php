@@ -6,6 +6,7 @@ use app\model\Record;
 use app\model\User;
 use app\service\QrService;
 use app\service\RecordSequenceService;
+use app\service\EmployeeTokenService;
 use think\facade\Log;
 use think\facade\Request;
 use think\Response;
@@ -14,6 +15,19 @@ class RecordController
     protected function seq(): RecordSequenceService
     {
         return new RecordSequenceService();
+    }
+
+    /** 从 Authorization: Bearer <auth_token> 解析有效管理员，失败返回 null */
+    private function adminFromBearer(): ?User
+    {
+        $header = (string) Request::header('authorization', '');
+        if (!preg_match('/^Bearer\s+(.+)$/i', $header, $m)) {
+            return null;
+        }
+        return User::where('auth_token', trim($m[1]))
+            ->where('role', 'admin')
+            ->where('auth_token_expires', '>', date('Y-m-d H:i:s'))
+            ->find() ?: null;
     }
 
     private function normalizeCheckDate($checkDate): ?string
@@ -35,23 +49,32 @@ class RecordController
     public function index(): Response
     {
         try {
-            $userId = Request::param('user_id');
-            $token = Request::param('token');
+            $uid = Request::param('uid', Request::param('user_id'));
+            $token = (string) Request::param('token');
             $checkDate = $this->normalizeCheckDate(Request::param('check_date'));
             $status = Request::param('status');
-            if ($token) {
-                $user = User::where('token', $token)->find();
-                if (!$user) {
-                    return api_json(['code' => 404, 'message' => '无效的 token', 'data' => null]);
+
+            // 管理员登录态：可按 user_id 查询任意员工的记录（管理端使用）
+            $admin = $this->adminFromBearer();
+            if ($admin) {
+                $userId = (int) $uid;
+                if ($userId <= 0) {
+                    return api_json(['code' => 400, 'message' => '缺少 user_id', 'data' => null]);
                 }
-                if (isset($user->is_active) && (int) $user->is_active !== 1) {
-                    return api_json(['code' => 403, 'message' => '账号已禁用', 'data' => null]);
+            } else {
+                // 员工端：必须 uid + token 双键校验通过，且只能看自己的整改项
+                $svc = new EmployeeTokenService();
+                [$statusCode, $user] = $svc->verify($uid, $token);
+                if ($statusCode !== EmployeeTokenService::OK) {
+                    return api_json([
+                        'code' => $statusCode,
+                        'message' => $svc->message($statusCode),
+                        'data' => null,
+                    ]);
                 }
-                $userId = $user->id;
+                $userId = (int) $user->id;
             }
-            if (!$userId) {
-                return api_json(['code' => 400, 'message' => '缺少 user_id 或 token', 'data' => null]);
-            }
+
             if ($checkDate === '__INVALID__') {
                 return api_json(['code' => 400, 'message' => 'check_date 格式错误（应为 YYYY-MM-DD）', 'data' => null]);
             }
@@ -176,20 +199,25 @@ class RecordController
             if (!$record) {
                 return api_json(['code' => 404, 'message' => '记录不存在', 'data' => null]);
             }
+            $uid = Request::param('uid', Request::param('user_id'));
             $token = (string) Request::param('token');
-            if (!$token) {
-                return api_json(['code' => 401, 'message' => '缺少 token', 'data' => null]);
-            }
-            $user = User::where('token', $token)->find();
-            if (!$user) {
-                return api_json(['code' => 401, 'message' => '无效的 token', 'data' => null]);
+            $svc = new EmployeeTokenService();
+            [$statusCode, $user] = $svc->verify($uid, $token);
+            if ($statusCode !== EmployeeTokenService::OK) {
+                return api_json(['code' => $statusCode, 'message' => $svc->message($statusCode), 'data' => null]);
             }
             if ((int) $record->user_id !== (int) $user->id) {
+                // 即使参数被篡改，也只能碰到自己的记录；访问别人的记录一律拒绝
                 return api_json(['code' => 403, 'message' => '无权操作该记录', 'data' => null]);
             }
             $fixImage = Request::param('fix_image');
             if (!$fixImage) {
                 return api_json(['code' => 400, 'message' => '缺少 fix_image', 'data' => null]);
+            }
+            // 只允许提交落在本人上传目录下的图片，防止把别人的图片路径写进来
+            $expectPrefix = '/uploads/employees/' . (int) $user->id . '/';
+            if (strpos((string) $fixImage, $expectPrefix) !== 0) {
+                return api_json(['code' => 403, 'message' => '只能上传本人的整改图片', 'data' => null]);
             }
             $record->fix_image = $fixImage;
             $record->status = 'completed';

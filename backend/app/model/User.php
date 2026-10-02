@@ -13,6 +13,7 @@ class User extends Model
         'username'           => 'string',
         'password_hash'      => 'string',
         'token'              => 'string',
+        'token_expires_at'   => 'datetime',
         'qr_code_url'        => 'string',
         'role'               => 'string',
         'is_active'          => 'int',

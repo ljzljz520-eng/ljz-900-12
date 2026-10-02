@@ -20,6 +20,9 @@ class QrController
             if (!$user) {
                 return api_json(['code' => 404, 'message' => '用户不存在', 'data' => null]);
             }
+            if ($user->role !== 'employee') {
+                return api_json(['code' => 400, 'message' => '仅支持为员工生成整改二维码', 'data' => null]);
+            }
             $data = (new QrService())->generateForUser($user, $baseUrl);
             return api_json([
                 'code' => 0,
@@ -27,6 +30,8 @@ class QrController
                 'data' => [
                     'link' => $data['link'],
                     'qr_code_url' => $data['qr_code_url'],
+                    'token' => $data['token'],
+                    'token_expires_at' => $data['token_expires_at'],
                 ],
             ]);
         } catch (\Throwable $e) {

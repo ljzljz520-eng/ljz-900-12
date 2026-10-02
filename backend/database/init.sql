@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `username` varchar(64) DEFAULT NULL,
   `password_hash` varchar(255) DEFAULT NULL,
   `token` varchar(64) NOT NULL,
+  `token_expires_at` datetime DEFAULT NULL,
   `qr_code_url` varchar(255) DEFAULT NULL,
   `role` varchar(16) NOT NULL DEFAULT 'employee',
   `is_active` tinyint(1) NOT NULL DEFAULT 1,
@@ -45,10 +46,10 @@ CREATE TABLE IF NOT EXISTS `records` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- Seed: admin (username=admin, password=admin123 on first login), employees, inspection items, records
-INSERT INTO `users` (`name`, `username`, `password_hash`, `token`, `role`, `is_active`) VALUES
-('管理员', 'admin', NULL, 'admin-token-001', 'admin', 1),
-('张三', NULL, NULL, 'emp-token-001', 'employee', 1),
-('李四', NULL, NULL, 'emp-token-002', 'employee', 1);
+INSERT INTO `users` (`name`, `username`, `password_hash`, `token`, `token_expires_at`, `role`, `is_active`) VALUES
+('管理员', 'admin', NULL, 'admin-token-001', NULL, 'admin', 1),
+('张三', NULL, NULL, 'a3f9c2e87b1d4f60a5e2c9d47b8f1036', DATE_ADD(NOW(), INTERVAL 90 DAY), 'employee', 1),
+('李四', NULL, NULL, '7d41e0b96a2f4c85b8e3f16a09d2c574', DATE_ADD(NOW(), INTERVAL 90 DAY), 'employee', 1);
 
 INSERT INTO `inspection_items` (`name`, `score`) VALUES
 ('地面清洁', 5),

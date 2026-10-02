@@ -34,9 +34,16 @@
 - 系统通过 Seed 预置演示数据。
 - **登录**：管理员端需先登录。默认账号：`admin` / `admin123`（首次登录会自动初始化密码）。
 - **管理员-检查上传**：登录后打开 `/admin`，选择员工、上传问题图片（每张显示 key #1、#2… 与检查项、扣分值）、可删除单张（删除后序号自动连续）、保存后获得整改链接与二维码。
-- **员工管理**：登录后打开 `/employees`，查看每名员工的 ID、token、整改链接与二维码（可点击「生成/刷新二维码」）。
-- **员工端**：通过链接 `http://localhost:3000/fix?token=emp-token-001` 进入（或扫码），无需登录，查看待整改项（图片对按 #key 从小到大排序）并上传整改图。
+- **员工管理**：登录后打开 `/employees`，查看每名员工的 ID、token、有效期、整改链接与二维码（可点击「生成/刷新二维码」）。
+- **员工端**：通过链接 `http://localhost:3000/fix?uid=2&token=<随机token>` 进入（或扫描专属二维码），无需登录，查看本人待整改项（图片对按 #key 从小到大排序）并上传整改图。
 - **汇总看板**：登录后打开 `/summary`，查看各员工整改进度与对比图；问题图与整改图成对展示，同一徽章（检查项+分值）共用。
+
+### 员工整改二维码安全机制
+
+- 二维码链接包含 **员工 ID（uid）+ 随机 token** 两个参数，每名员工唯一；每次「生成/刷新二维码」或「重置 token」都会换发新 token（有效期 90 天），旧二维码立即失效。
+- 后端按 uid + token 双键校验：篡改 URL 上的 `uid` 或 `token` 均无法通过，员工只能查看并上传**本人的**整改项；整改图必须落在本人上传目录、记录归属由服务端强制比对，无法替换成他人图片。
+- token 缺失 / 无效 / 已过期 / 账号被禁用时，员工端整页提示「无法访问整改页面，请联系管理员重新生成您的专属二维码」，不展示任何他人内容。
+- token 过期后：管理员在「员工管理」页点击「生成/刷新二维码」即可给员工新码。
 
 ### 已有数据库升级
 
@@ -53,6 +60,14 @@ docker exec -i <mysql_container_name> mysql -uroot -proot hygiene_audit < backen
 ```
 
 脚本会为 `records.check_date` 赋值：优先取 `created_at` 的日期部分，缺失时使用当前日期。
+
+若已有数据库需要为员工整改 token 增加过期机制（`users.token_expires_at` 字段），可执行：
+
+```bash
+docker exec -i <mysql_container_name> mysql -uroot -proot hygiene_audit < backend/database/migrate_add_token_expiry.sql
+```
+
+脚本会为历史员工 token 补充 30 天宽限期；之后由管理员重新生成二维码换发 90 天有效的新 token。
 
 ## Docker 说明
 

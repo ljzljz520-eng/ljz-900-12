@@ -7,9 +7,17 @@ use think\facade\Request;
 use think\Response;
 class UserController
 {
+    /** 员工整改 token 有效期（天） */
+    public const TOKEN_TTL_DAYS = 90;
+
     private function randomToken(int $bytes = 16): string
     {
         return bin2hex(random_bytes($bytes));
+    }
+
+    private function tokenExpiresAt(): string
+    {
+        return date('Y-m-d H:i:s', time() + self::TOKEN_TTL_DAYS * 86400);
     }
 
     private function uniqueEmployeeToken(): string
@@ -60,6 +68,7 @@ class UserController
                 'name' => $name,
                 'role' => 'employee',
                 'token' => $this->uniqueEmployeeToken(),
+                'token_expires_at' => $this->tokenExpiresAt(),
                 'is_active' => 1,
             ]);
             return api_json(['code' => 0, 'message' => 'ok', 'data' => $user->toArray()]);
@@ -105,6 +114,7 @@ class UserController
                 return api_json(['code' => 400, 'message' => '仅支持重置员工 token', 'data' => null]);
             }
             $user->token = $this->uniqueEmployeeToken();
+            $user->token_expires_at = $this->tokenExpiresAt();
             $user->qr_code_url = null;
             $user->save();
             return api_json(['code' => 0, 'message' => 'ok', 'data' => $user->toArray()]);

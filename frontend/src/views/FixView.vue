@@ -23,26 +23,33 @@
           </div>
           <div>
             <h1 class="fix-title">员工整改</h1>
-            <p v-if="!token" class="fix-warn">请通过扫码或链接（含 token）进入</p>
-            <p v-else class="fix-sub">查看待整改项并上传整改图（图片对按 #key 从小到大排序）</p>
+            <p v-if="authState === 'invalid'" class="fix-warn">{{ invalidMessage }}</p>
+            <p v-else-if="!hasParams" class="fix-warn">请通过管理员提供的二维码扫码进入</p>
+            <p v-else class="fix-sub">
+              <template v-if="employeeName">{{ employeeName }}，</template>查看待整改项并上传整改图（图片对按 #key 从小到大排序）
+            </p>
           </div>
         </div>
       </header>
 
-      <section v-loading="loading" class="fix-content">
-        <div v-if="token" class="fix-toolbar">
+      <!-- 缺少参数 / token 无效或过期：整页提示，不展示任何整改内容 -->
+      <section v-if="authState === 'invalid' || !hasParams" class="fix-content">
+        <div class="fix-empty fix-denied">
+          <div class="fix-empty-icon">
+            <el-icon><WarningFilled /></el-icon>
+          </div>
+          <p class="fix-empty-text">无法访问整改页面</p>
+          <p class="fix-empty-hint">{{ hasParams ? invalidMessage : '链接缺少员工 ID 或 token，请使用管理员提供的二维码扫码进入' }}</p>
+          <p class="fix-denied-tip">请联系管理员重新生成您的专属二维码</p>
+        </div>
+      </section>
+
+      <section v-else v-loading="loading" class="fix-content">
+        <div class="fix-toolbar">
           <el-switch v-model="onlyPending" active-text="仅看待整改" inactive-text="显示全部" />
         </div>
 
-        <div v-if="!token" class="fix-empty">
-          <div class="fix-empty-icon">
-            <el-icon><Link /></el-icon>
-          </div>
-          <p class="fix-empty-text">缺少 token</p>
-          <p class="fix-empty-hint">无法加载整改列表，请使用管理员提供的链接或扫码进入</p>
-        </div>
-
-        <div v-else-if="records.length === 0 && !loading" class="fix-empty">
+        <div v-if="records.length === 0 && !loading" class="fix-empty">
           <div class="fix-empty-icon success">
             <el-icon><CircleCheck /></el-icon>
           </div>
@@ -111,7 +118,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, Loading, Link } from '@element-plus/icons-vue'
+import { CircleCheck, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { api, apiBase } from '@/api/request'
 
 const route = useRoute()
@@ -120,7 +127,21 @@ const uploadingId = ref(null)
 const records = ref([])
 const onlyPending = ref(false)
 
-const token = computed(() => route.query.token || '')
+// 二维码链接：/fix?uid=<员工ID>&token=<token>，两者缺一不可
+const uid = computed(() => {
+  const v = Number(route.query.uid)
+  return Number.isInteger(v) && v > 0 ? v : null
+})
+const token = computed(() => {
+  const t = route.query.token
+  return typeof t === 'string' && t.trim() ? t.trim() : ''
+})
+const hasParams = computed(() => uid.value !== null && token.value !== '')
+
+// checking | ok | invalid
+const authState = ref('checking')
+const invalidMessage = ref('二维码无效或已失效')
+const employeeName = ref('')
 
 function imageUrl(path) {
   if (!path) return ''
@@ -128,45 +149,82 @@ function imageUrl(path) {
   return path.startsWith('http') ? path : (base.replace(/\/$/, '') + path)
 }
 
-async function loadRecords() {
-  if (!token.value) {
+async function verifySession() {
+  if (!hasParams.value) {
+    authState.value = 'invalid'
     loading.value = false
     return
   }
+  authState.value = 'checking'
   loading.value = true
   try {
-    const list = await api.getRecords({ token: token.value, status: onlyPending.value ? 'pending' : undefined })
-    records.value = list || []
-  } catch (_) {
+    const info = await api.employeeSession(uid.value, token.value)
+    if (!info || Number(info.id) !== uid.value) {
+      throw Object.assign(new Error('二维码无效或已失效'), { code: 401 })
+    }
+    employeeName.value = info.name || ''
+    authState.value = 'ok'
+    await loadRecords()
+  } catch (e) {
+    // 400 缺少参数 / 401 无效 / 403 禁用 / 410 过期：统一引导联系管理员重新生成
+    authState.value = 'invalid'
+    invalidMessage.value =
+      e?.payload?.message || (e?.code ? '二维码无效或已失效' : '网络异常，请稍后重试')
     records.value = []
   } finally {
     loading.value = false
   }
 }
 
+async function loadRecords() {
+  if (authState.value !== 'ok') return
+  try {
+    const list = await api.getRecords(
+      { uid: uid.value, token: token.value, status: onlyPending.value ? 'pending' : undefined },
+      { skipAuthRedirect: true, silent: true },
+    )
+    records.value = list || []
+  } catch (e) {
+    // token 在使用过程中失效（如管理员重置/过期）：立即切换为失效提示
+    if ([400, 401, 403, 410].includes(e?.code)) {
+      authState.value = 'invalid'
+      invalidMessage.value = e.payload?.message || '二维码无效或已失效'
+    }
+    records.value = []
+  }
+}
+
 async function uploadFix(recordId, file) {
+  if (authState.value !== 'ok') return false
   uploadingId.value = recordId
   try {
-    const res = await api.uploadImage(file, token.value)
+    const res = await api.uploadImage(file, uid.value, token.value)
     if (!res?.path) throw new Error('上传失败')
-    await api.uploadFix(recordId, res.path, token.value)
+    await api.uploadFix(recordId, res.path, uid.value, token.value)
     const idx = records.value.findIndex((r) => r.id === recordId)
     if (idx !== -1) {
       records.value[idx] = { ...records.value[idx], fix_image: res.path, status: 'completed' }
     }
     ElMessage.success('整改已提交')
-  } catch (_) {
-    ElMessage.error('上传失败')
+  } catch (e) {
+    if ([400, 401, 403, 410].includes(e?.code)) {
+      authState.value = 'invalid'
+      invalidMessage.value = e.payload?.message || '二维码无效或已失效'
+    } else {
+      ElMessage.error('上传失败，请重试')
+    }
   } finally {
     uploadingId.value = null
   }
   return false
 }
 
-onMounted(loadRecords)
+onMounted(verifySession)
 
 // 切换筛选后刷新
-watch(onlyPending, loadRecords)
+watch(onlyPending, () => {
+  if (authState.value === 'ok') loadRecords()
+})
 </script>
 
 <style scoped>
@@ -311,6 +369,17 @@ watch(onlyPending, loadRecords)
   font-size: 14px;
   color: #94a3b8;
   margin: 0;
+}
+
+.fix-denied {
+  border-color: rgba(248, 113, 113, 0.25);
+}
+
+.fix-denied-tip {
+  margin-top: 20px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #f87171;
 }
 
 .fix-list-inner {
